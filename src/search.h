@@ -34,11 +34,8 @@ namespace Search {
 /// Threshold used for countermoves based pruning
 constexpr int CounterMovePruneThreshold = 0;
 
-
 /// Stack struct keeps track of the information we need to remember from nodes
-/// shallower and deeper in the tree during the search. Each search thread has
-/// its own array of Stack objects, indexed by the current ply.
-
+/// shallower and deeper in the tree during the search.
 struct Stack {
   Move* pv;
   PieceToHistory* continuationHistory;
@@ -55,13 +52,8 @@ struct Stack {
   int doubleExtensions;
 };
 
-
-/// RootMove struct is used for moves at the root of the tree. For each root move
-/// we store a score and a PV (really a refutation in the case of moves which
-/// fail low). Score is normally set at -VALUE_INFINITE for all non-pv moves.
-
+/// RootMove struct is used for moves at the root of the tree.
 struct RootMove {
-
   explicit RootMove(Move m) : pv(1, m) {}
   bool extract_ponder_from_tt(Position& pos);
   bool operator==(const Move& m) const { return pv[0] == m; }
@@ -80,13 +72,9 @@ struct RootMove {
 
 typedef std::vector<RootMove> RootMoves;
 
-
-/// LimitsType struct stores information sent by GUI about available time to
-/// search the current move, maximum depth/time, or if we are in analysis mode.
-
+/// LimitsType struct stores information sent by GUI about available time.
 struct LimitsType {
-
-  LimitsType() { // Init explicitly due to broken value-initialization of non POD in MSVC
+  LimitsType() {
     time[WHITE] = time[BLACK] = inc[WHITE] = inc[BLACK] = npmsec = movetime = TimePoint(0);
     movestogo = depth = mate = perft = infinite = 0;
     nodes = 0;

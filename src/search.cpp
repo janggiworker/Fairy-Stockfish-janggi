@@ -290,7 +290,7 @@ void MainThread::search() {
           }
           else
               sync_cout << "move " << UCI::move(rootPos, bestMove) << sync_endl;
-          if (XBoard::stateMachine->moveAfterSearch)
+          if (XBoard::stateMachine && XBoard::stateMachine->moveAfterSearch)
           {
               XBoard::stateMachine->do_move(bestMove);
               XBoard::stateMachine->moveAfterSearch = false;
@@ -794,7 +794,7 @@ namespace {
                     update_quiet_stats(pos, ss, ttMove, stat_bonus(depth), depth);
 
                 // Extra penalty for early quiet moves of the previous ply
-                if ((ss-1)->moveCount <= 2 && !priorCapture)
+                if ((ss-1)->moveCount <= 2 && !priorCapture && prevSq != SQ_NONE)
                     update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, -stat_bonus(depth + 1));
             }
             // Penalty for a quiet ttMove that fails low
@@ -984,7 +984,7 @@ namespace {
         }
     }
 
-    probCutBeta = beta + (209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
+    probCutBeta = beta + (209 + 20 * !pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
 
     // Step 9. ProbCut (~4 Elo)
     // If we have a good enough capture and a reduced search returns a value
@@ -1079,7 +1079,7 @@ moves_loop: // When in check, search starts from here
                                           nullptr                   , (ss-4)->continuationHistory,
                                           nullptr                   , (ss-6)->continuationHistory };
 
-    Move countermove = thisThread->counterMoves[pos.piece_on(prevSq)][prevSq];
+    Move countermove = prevSq != SQ_NONE ? thisThread->counterMoves[pos.piece_on(prevSq)][prevSq] : MOVE_NONE;
 
     MovePicker mp(pos, ttMove, depth, &thisThread->mainHistory,
                                       &thisThread->gateHistory,
@@ -1187,7 +1187,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1200,7 +1200,7 @@ moves_loop: // When in check, search starts from here
       // a reduced search on all the other moves but the ttMove and if the
       // result is lower than ttValue minus a margin, then we will extend the ttMove.
       if (   !rootNode
-          &&  depth >= 7 - 2 * (pos.count<KING>() == 1)
+          &&  depth >= 6 + ss->ttPv - 2 * (pos.count<KING>() == 1)
           &&  move == ttMove
           && !excludedMove // Avoid recursive singular search
        /* &&  ttValue != VALUE_NONE Already implicit in the next condition */
@@ -1208,7 +1208,7 @@ moves_loop: // When in check, search starts from here
           && (tte->bound() & BOUND_LOWER)
           &&  tte->depth() >= depth - 3)
       {
-          Value singularBeta = ttValue - 2 * depth;
+          Value singularBeta = ttValue - (50 + 60 * (ss->ttPv && !PvNode)) * depth / 64;
           Depth singularDepth = (depth - 1) / 2;
 
           ss->excludedMove = move;
@@ -1327,7 +1327,7 @@ moves_loop: // When in check, search starts from here
                   r++;
 
               ss->statScore =  thisThread->mainHistory[us][from_to(move)]
-                             + thisThread->gateHistory[us][gating_square(move)] * 2
+                             + (pos.walling() ? thisThread->gateHistory[us][gating_square(move)] * 2 : 0)
                              + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
@@ -1345,8 +1345,19 @@ moves_loop: // When in check, search starts from here
 
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
-          // If the son is reduced and fails high it will be re-searched at full depth
-          doFullDepthSearch = value > alpha && d < newDepth;
+          // If the son is reduced and fails high, re-search at a dynamically adjusted depth
+          if (value > alpha && d < newDepth)
+          {
+              const bool doDeeperSearch = value > bestValue + 53;
+              const bool doShallowerSearch = value < bestValue + 8;
+              Depth researchDepth = newDepth + doDeeperSearch - doShallowerSearch;
+
+              value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, researchDepth, !cutNode);
+
+              if (!captureOrPromotion)
+                  update_continuation_histories(ss, movedPiece, to_sq(move), stat_bonus(newDepth));
+          }
+          doFullDepthSearch = false;
           didLMR = true;
       }
       else
@@ -1482,7 +1493,8 @@ moves_loop: // When in check, search starts from here
 
     // Bonus for prior countermove that caused the fail low
     else if (   (depth >= 3 || PvNode)
-             && !priorCapture)
+             && !priorCapture
+             && prevSq != SQ_NONE)
         update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, stat_bonus(depth));
 
     if (PvNode)

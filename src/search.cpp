@@ -355,7 +355,7 @@ void Search::Worker::start_searching() {
             }
             else
                 sync_cout << "move " << UCI::move(rootPos, bestMove) << sync_endl;
-            if (XBoard::stateMachine->moveAfterSearch)
+            if (XBoard::stateMachine && XBoard::stateMachine->moveAfterSearch)
             {
                 XBoard::stateMachine->do_move(bestMove);
                 XBoard::stateMachine->moveAfterSearch = false;
@@ -1274,7 +1274,7 @@ Value Search::Worker::search(
     // If we have a good enough capture (or queen promotion) and a reduced search
     // returns a value much above beta, we can (almost) safely prune the previous move.
     probCutBeta = beta
-                + (241 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand())
+                + (241 + 20 * !pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand())
                     * (1 + pos.check_counting() + pos.extinction_single_piece())
                 - 64 * improving;
     if (depth >= 3 && !is_decisive(beta) && !(is_valid(ttData.value) && ttData.value < probCutBeta))
@@ -1460,7 +1460,7 @@ moves_loop:  // When in check, search starts here
 
                 // Prune moves with negative SEE
                 if (!(pos.walling_rule() == DUCK)
-                    && !pos.see_ge(move, Value(-(23 + 10 * !!pos.flag_region(pos.side_to_move()))
+                    && !pos.see_ge(move, Value(-(23 + 10 * !pos.flag_region(pos.side_to_move()))
                                                * lmrDepth * lmrDepth)))
                     continue;
             }
@@ -1591,7 +1591,9 @@ moves_loop:  // When in check, search starts here
         else
             ss->statScore =
               (2252 * mainHistory[us][from_to(move)]
-               + (pos.walling_rule() == DUCK ? 0 : 2252) * gateHistory[us][gating_square(move)]
+               + ((pos.walling() && pos.walling_rule() != DUCK)
+                  ? 2252 * gateHistory[us][gating_square(move)]
+                  : 0)
                + 1126 * (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                + 1093 * (*contHist[1])[history_slot(movedPiece)][to_sq(move)])
               / 1024;

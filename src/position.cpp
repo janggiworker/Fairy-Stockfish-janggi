@@ -931,6 +931,79 @@ Bitboard Position::slider_blockers(Bitboard sliders, Square s, Bitboard& pinners
 
 Bitboard Position::attackers_to(Square s, Bitboard occupied, Color c, Bitboard janggiCannons) const {
 
+  // Janggi-specialized attack detection for the material-counting variants.
+  // The general engine iterates through every configured fairy piece type and
+  // checks its movement-region table at each call. Janggi has a fixed set of
+  // movers; avoid that dispatch on the most frequent attack query path.
+  // Preserve the generic palace diagonal handling below.
+  // Keep configurable/custom fairy variants on the general attack path.
+  constexpr PieceSet JanggiPieceTypes = piece_set(ROOK) | piece_set(SOLDIER)
+                                      | piece_set(WAZIR) | piece_set(KING)
+                                      | piece_set(JANGGI_CANNON) | piece_set(HORSE)
+                                      | piece_set(JANGGI_ELEPHANT);
+  if (var->materialCounting == JANGGI_MATERIAL && var->pieceTypes == JanggiPieceTypes)
+  {
+      Bitboard b = 0;
+
+      // On the main grid, kings and guards are restricted to their own palaces.
+      // Attackers on palace diagonals are added by the common code below.
+      b |= attacks_bb(~c, ROOK, s, occupied) & pieces(c, ROOK);
+      b |= attacks_bb(~c, SOLDIER, s, occupied) & pieces(c, SOLDIER);
+      if (board_bb(c, WAZIR) & s)
+          b |= attacks_bb(~c, WAZIR, s, occupied) & pieces(c, WAZIR);
+      if (board_bb(c, KING) & s)
+          b |= attacks_bb(~c, king_type(), s, occupied) & pieces(c, KING);
+      {
+          // Avoid evaluating the second hopper ray when no live cannon
+          // from this side attacks the target even under the first ray.
+          const Bitboard cannonCandidates = attacks_bb(~c, JANGGI_CANNON, s, occupied)
+                                              & pieces(c, JANGGI_CANNON);
+          if (cannonCandidates)
+              b |= cannonCandidates & attacks_bb(~c, JANGGI_CANNON, s, occupied & ~janggiCannons);
+      }
+
+      // Both Horse and Elephant have a blocking leg: their reverse pseudo
+      // attack masks only provide candidates, not guaranteed real attacks.
+      {
+          Bitboard candidates = PseudoAttacks[~c][HORSE][s] & pieces(c, HORSE);
+          while (candidates)
+          {
+              const Square from = pop_lsb(candidates);
+              if (attacks_bb(c, HORSE, from, occupied) & s)
+                  b |= from;
+          }
+      }
+      {
+          Bitboard candidates = PseudoAttacks[~c][JANGGI_ELEPHANT][s] & pieces(c, JANGGI_ELEPHANT);
+          while (candidates)
+          {
+              const Square from = pop_lsb(candidates);
+              if (attacks_bb(c, JANGGI_ELEPHANT, from, occupied) & s)
+                  b |= from;
+          }
+      }
+
+      // Janggi has special palace diagonals for guards, kings, soldiers,
+      // rooks and cannons. Exactly mirror the generic extra attack logic.
+      if (diagonal_lines() & s)
+      {
+          Bitboard diags = 0;
+          if (king_type() == WAZIR)
+              diags |= attacks_bb(~c, FERS, s, occupied) & pieces(c, KING);
+          diags |= attacks_bb(~c, FERS, s, occupied) & pieces(c, WAZIR);
+          diags |= attacks_bb(~c, PAWN, s, occupied) & pieces(c, SOLDIER);
+          diags |= rider_attacks_bb<RIDER_BISHOP>(s, occupied) & pieces(c, ROOK);
+          const Bitboard diagCannonCandidates = rider_attacks_bb<RIDER_CANNON_DIAG>(s, occupied)
+                                                & pieces(c, JANGGI_CANNON);
+          if (diagCannonCandidates)
+              diags |= diagCannonCandidates & rider_attacks_bb<RIDER_CANNON_DIAG>(s, occupied & ~janggiCannons);
+          b |= diags & diagonal_lines();
+      }
+      if ((b & pieces(SOLDIER)) && relative_rank(c, s, max_rank()) < var->soldierPromotionRank)
+          b ^= b & pieces(SOLDIER) & ~PseudoAttacks[~c][SHOGI_PAWN][s];
+      return b;
+  }
+
   // Use a faster version for variants with moderate rule variations
   if (var->fastAttacks)
   {
@@ -2702,16 +2775,35 @@ bool Position::is_optional_game_end(Value& result, int ply, int countStarted) co
 
               // Return a draw score if a position repeats once earlier but strictly
               // after the root, or repeats twice before or at the root.
-              if (   stp->key == st->key
-                  && ++cnt + 1 >= (ply > i && !moveRepetition && !chaseUs && !chaseThem && !perpetualUs && !perpetualThem ? 2 : n_fold_rule()))
+              if (stp->key == st->key)
               {
+                  ++cnt;
+                  // A two-fold search shortcut is appropriate for a normal draw,
+                  // but not for Janggi material-scoring or illegal repetitions.
+                  // An early draw here can hide a point-winning line.
+                  const bool afterRootDrawShortcut = ply > i
+                          && var->nFoldValue == VALUE_DRAW
+                          && !var->nFoldValueAbsolute
+                          && !var->materialCounting
+                          && !var->moveRepetitionIllegal
+                          && !moveRepetition
+                          && !chaseUs && !chaseThem
+                          && !perpetualUs && !perpetualThem;
+                  const int repetitionThreshold = afterRootDrawShortcut ? 2 : n_fold_rule();
+                  if (cnt + 1 < repetitionThreshold)
+                  {
+                      // Continue examining older repetitions.
+                  }
+                  else
+                  {
                   result = convert_mate_value(  (perpetualThem || perpetualUs) ? (!perpetualUs ? VALUE_MATE : !perpetualThem ? -VALUE_MATE : VALUE_DRAW)
                                               : (chaseThem || chaseUs) ? (!chaseUs ? VALUE_MATE : !chaseThem ? -VALUE_MATE : VALUE_DRAW)
                                               : var->nFoldValueAbsolute && sideToMove == BLACK ? -var->nFoldValue
                                               : var->nFoldValue, ply);
-                  if (result == VALUE_DRAW && var->materialCounting)
-                      result = convert_mate_value(material_counting_result(), ply);
-                  return true;
+                      if (result == VALUE_DRAW && var->materialCounting)
+                          result = convert_mate_value(material_counting_result(), ply);
+                      return true;
+                  }
               }
 
               if (i + 1 <= end)

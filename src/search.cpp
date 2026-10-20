@@ -290,7 +290,7 @@ void MainThread::search() {
           }
           else
               sync_cout << "move " << UCI::move(rootPos, bestMove) << sync_endl;
-          if (XBoard::stateMachine->moveAfterSearch)
+          if (XBoard::stateMachine && XBoard::stateMachine->moveAfterSearch)
           {
               XBoard::stateMachine->do_move(bestMove);
               XBoard::stateMachine->moveAfterSearch = false;
@@ -663,6 +663,8 @@ namespace {
     // if the opponent had an alternative move earlier to this position.
     if (   !rootNode
         && pos.rule50_count() >= 3
+        // Janggi material-scoring repetitions must use the full adjudication path.
+        && pos.material_counting() != JANGGI_MATERIAL
         && alpha < VALUE_DRAW
         && pos.has_game_cycle(ss->ply))
     {
@@ -700,6 +702,8 @@ namespace {
     ss->inCheck        = pos.checkers();
     priorCapture       = pos.captured_piece();
     Color us           = pos.side_to_move();
+    // Applies only to Janggi material-scoring variants; preserve other game behavior.
+    const bool janggiSearch = pos.material_counting() == JANGGI_MATERIAL;
     moveCount          = captureCount = quietCount = ss->moveCount = 0;
     bestValue          = -VALUE_INFINITE;
     maxValue           = VALUE_INFINITE;
@@ -794,7 +798,7 @@ namespace {
                     update_quiet_stats(pos, ss, ttMove, stat_bonus(depth), depth);
 
                 // Extra penalty for early quiet moves of the previous ply
-                if ((ss-1)->moveCount <= 2 && !priorCapture)
+                if ((ss-1)->moveCount <= 2 && !priorCapture && prevSq != SQ_NONE)
                     update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, -stat_bonus(depth + 1));
             }
             // Penalty for a quiet ttMove that fails low
@@ -984,7 +988,9 @@ namespace {
         }
     }
 
-    probCutBeta = beta + (209 + 20 * !!pos.flag_region(~pos.side_to_move()) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
+    // Historical 23-line patch relaxed ProbCut by 20 for no-flag variants.
+    // Limit the new behavior to Janggi so other variants retain original tuning.
+    probCutBeta = beta + (209 + 20 * (janggiSearch || !!pos.flag_region(~pos.side_to_move())) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
 
     // Step 9. ProbCut (~4 Elo)
     // If we have a good enough capture and a reduced search returns a value
@@ -1051,10 +1057,12 @@ namespace {
     }
 
     // Step 10. If the position is not in TT, decrease depth by 2
+    // Search-generic: preserve one ply only for a hit lacking usable best move.
+    // A true TT miss retains the original v3 pruning budget.
     if (   PvNode
         && depth >= 6
         && !ttMove)
-        depth -= 2;
+        depth -= ss->ttHit ? 1 : 2;
 
 moves_loop: // When in check, search starts from here
 
@@ -1079,7 +1087,7 @@ moves_loop: // When in check, search starts from here
                                           nullptr                   , (ss-4)->continuationHistory,
                                           nullptr                   , (ss-6)->continuationHistory };
 
-    Move countermove = thisThread->counterMoves[pos.piece_on(prevSq)][prevSq];
+    Move countermove = prevSq != SQ_NONE ? thisThread->counterMoves[pos.piece_on(prevSq)][prevSq] : MOVE_NONE;
 
     MovePicker mp(pos, ttMove, depth, &thisThread->mainHistory,
                                       &thisThread->gateHistory,
@@ -1145,7 +1153,10 @@ moves_loop: // When in check, search starts from here
           && bestValue > VALUE_TB_LOSS_IN_MAX_PLY)
       {
           // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
-          moveCountPruning = moveCount >= futility_move_count(improving, depth, pos);
+          // Janggi has many non-capturing tactical continuations around the palace.
+          // Permit two extra candidates in shallow searches, keeping deep behavior.
+          moveCountPruning = moveCount >= futility_move_count(improving, depth, pos)
+                                   + (janggiSearch && depth <= 6 ? 1 : 0);
 
           // Reduced depth of the next LMR search
           int lmrDepth = std::max(newDepth - reduction(improving, depth, moveCount), 0);
@@ -1179,7 +1190,8 @@ moves_loop: // When in check, search starts from here
               if (   lmrDepth < 7
                   && !ss->inCheck
                   && !pos.extinction_single_piece()
-                  && ss->staticEval + (174 + 157 * lmrDepth) * (1 + pos.check_counting()) <= alpha
+                  && ss->staticEval + (174 + 157 * lmrDepth + (janggiSearch ? 80 : 0))
+                                      * (1 + pos.check_counting()) <= alpha
                   &&  (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                     + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
@@ -1187,7 +1199,7 @@ moves_loop: // When in check, search starts from here
                   continue;
 
               // Prune moves with negative SEE (~20 Elo)
-              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * !!pos.flag_region(pos.side_to_move())) * lmrDepth * lmrDepth)))
+              if (!(pos.walling_rule() == DUCK) && !pos.see_ge(move, Value(-(30 - std::min(lmrDepth, 18) + 10 * (janggiSearch || !!pos.flag_region(pos.side_to_move()))) * lmrDepth * lmrDepth)))
                   continue;
           }
       }
@@ -1200,7 +1212,7 @@ moves_loop: // When in check, search starts from here
       // a reduced search on all the other moves but the ttMove and if the
       // result is lower than ttValue minus a margin, then we will extend the ttMove.
       if (   !rootNode
-          &&  depth >= 7 - 2 * (pos.count<KING>() == 1)
+          &&  depth >= (janggiSearch ? 6 + ss->ttPv : 7) - 2 * (pos.count<KING>() == 1)
           &&  move == ttMove
           && !excludedMove // Avoid recursive singular search
        /* &&  ttValue != VALUE_NONE Already implicit in the next condition */
@@ -1208,7 +1220,11 @@ moves_loop: // When in check, search starts from here
           && (tte->bound() & BOUND_LOWER)
           &&  tte->depth() >= depth - 3)
       {
-          Value singularBeta = ttValue - 2 * depth;
+          // Original singular margin for other variants; historical 23-line
+          // Janggi re-tuning for the candidate's TT-bound verification.
+          Value singularBeta = janggiSearch
+                             ? ttValue - (50 + 60 * (ss->ttPv && !PvNode)) * depth / 64
+                             : ttValue - 2 * depth;
           Depth singularDepth = (depth - 1) / 2;
 
           ss->excludedMove = move;
@@ -1327,7 +1343,7 @@ moves_loop: // When in check, search starts from here
                   r++;
 
               ss->statScore =  thisThread->mainHistory[us][from_to(move)]
-                             + thisThread->gateHistory[us][gating_square(move)] * 2
+                             + (pos.walling() ? thisThread->gateHistory[us][gating_square(move)] * 2 : 0)
                              + (*contHist[0])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[1])[history_slot(movedPiece)][to_sq(move)]
                              + (*contHist[3])[history_slot(movedPiece)][to_sq(move)]
@@ -1345,8 +1361,20 @@ moves_loop: // When in check, search starts from here
 
           value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, d, true);
 
-          // If the son is reduced and fails high it will be re-searched at full depth
-          doFullDepthSearch = value > alpha && d < newDepth;
+          // Retain the historic 23-line patch's margin-adaptive re-search on
+          // Janggi, with bounded depth to avoid extension overruns. Other
+          // variants keep their original full-depth re-search behavior.
+          if (janggiSearch && value > alpha && d < newDepth)
+          {
+              const bool doDeeperSearch = value > bestValue + 53;
+              const bool doShallowerSearch = value < bestValue + 8;
+              const Depth researchDepth = std::clamp(newDepth + doDeeperSearch - doShallowerSearch,
+                                                    1, maxNextDepth);
+              value = -search<NonPV>(pos, ss+1, -(alpha+1), -alpha, researchDepth, !cutNode);
+              if (!captureOrPromotion)
+                  update_continuation_histories(ss, movedPiece, to_sq(move), stat_bonus(newDepth));
+          }
+          doFullDepthSearch = !janggiSearch && value > alpha && d < newDepth;
           didLMR = true;
       }
       else
@@ -1482,7 +1510,8 @@ moves_loop: // When in check, search starts from here
 
     // Bonus for prior countermove that caused the fail low
     else if (   (depth >= 3 || PvNode)
-             && !priorCapture)
+             && !priorCapture
+             && prevSq != SQ_NONE)
         update_continuation_histories(ss-1, pos.piece_on(prevSq), prevSq, stat_bonus(depth));
 
     if (PvNode)

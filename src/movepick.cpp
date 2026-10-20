@@ -131,15 +131,19 @@ void MovePicker::score() {
 
   static_assert(Type == CAPTURES || Type == QUIETS || Type == EVASIONS, "Wrong type");
 
+  // Janggi never gates new pieces: skip the otherwise redundant gate-history
+  // memory access on every sorted move. Preserve generic behavior elsewhere.
+  const bool janggi = pos.material_counting() == JANGGI_MATERIAL;
+
   for (auto& m : *this)
       if constexpr (Type == CAPTURES)
           m.value =  int(PieceValue[MG][pos.piece_on(to_sq(m))]) * 6
-                   + (*gateHistory)[pos.side_to_move()][gating_square(m)]
+                   + (janggi ? 0 : (*gateHistory)[pos.side_to_move()][gating_square(m)])
                    + (*captureHistory)[pos.moved_piece(m)][to_sq(m)][type_of(pos.piece_on(to_sq(m)))];
 
       else if constexpr (Type == QUIETS)
           m.value =      (*mainHistory)[pos.side_to_move()][from_to(m)]
-                   +     (*gateHistory)[pos.side_to_move()][gating_square(m)]
+                   +     (janggi ? 0 : (*gateHistory)[pos.side_to_move()][gating_square(m)])
                    + 2 * (*continuationHistory[0])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[1])[history_slot(pos.moved_piece(m))][to_sq(m)]
                    +     (*continuationHistory[3])[history_slot(pos.moved_piece(m))][to_sq(m)]

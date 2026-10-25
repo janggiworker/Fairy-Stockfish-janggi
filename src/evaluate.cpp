@@ -1646,12 +1646,28 @@ Value Eval::evaluate(const Position& pos) {
                     : adjusted_NNUE();                   // NNUE
   }
 
-  // Damp down the evaluation linearly when shuffling
+  // R13 experimental: Janggi material-scoring positions only.
   if (pos.n_move_rule())
   {
-      v = v * (2 * pos.n_move_rule() - pos.rule50_count()) / (2 * pos.n_move_rule());
-      if (pos.material_counting())
-          v += pos.material_counting_result() / (10 * std::max(2 * pos.n_move_rule() - pos.rule50_count(), 1));
+      const int ruleLimit = 2 * pos.n_move_rule();
+      if (pos.material_counting() == JANGGI_MATERIAL)
+      {
+          const int elapsed = std::clamp(pos.rule50_count(), 0, ruleLimit);
+          // Retain at least 75% of the incoming NNUE/classical evaluation.
+          v = Value(int64_t(v) * (4 * ruleLimit - elapsed) / (4 * ruleLimit));
+          // Smooth bounded prospective point-adjudication correction.
+          const int leader = pos.material_counting_result() > 0 ? 1 : -1;
+          const int64_t elapsed4 = int64_t(elapsed) * elapsed * elapsed * elapsed;
+          const int64_t limit4 = int64_t(ruleLimit) * ruleLimit * ruleLimit * ruleLimit;
+          v += Value(leader * (900 * elapsed4 / limit4));
+      }
+      else
+      {
+          // Preserve the official v7 behavior for other variants.
+          v = v * (ruleLimit - pos.rule50_count()) / ruleLimit;
+          if (pos.material_counting())
+              v += pos.material_counting_result() / (10 * std::max(ruleLimit - pos.rule50_count(), 1));
+      }
   }
 
   // Guarantee evaluation does not hit the virtual win/loss range

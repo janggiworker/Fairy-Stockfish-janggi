@@ -331,8 +331,10 @@ CXXFLAGS += -Wall -Wcast-qual -fno-exceptions -std=c++17 $(EXTRACXXFLAGS)
 DEPENDFLAGS += -std=c++17
 LDFLAGS += $(EXTRALDFLAGS)
 
-# Ignore warning due to missing profile information from unused NNUE features
+# Clang-only warning switch; MinGW GCC does not recognize it.
+ifeq ($(COMP),clang)
 CXXFLAGS += -Wno-profile-instr-out-of-date
+endif
 
 # Compile version with support for large board variants
 # Use precomputed magics by default if pext is not available

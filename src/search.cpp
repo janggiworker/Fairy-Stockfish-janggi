@@ -992,6 +992,11 @@ namespace {
     // Limit the new behavior to Janggi so other variants retain original tuning.
     probCutBeta = beta + (209 + 20 * (janggiSearch || !!pos.flag_region(~pos.side_to_move())) + 50 * pos.captures_to_hand()) * (1 + pos.check_counting() + pos.extinction_single_piece()) - 44 * improving;
 
+    // V6 R3: Avoid shallow ProbCut claims immediately after an opponent capture.
+    // The bound is speculative in sharp exchanges, so require an extra margin.
+    if (janggiSearch && priorCapture && depth <= 10 && depth >= 5)
+        probCutBeta += 120;
+
     // Step 9. ProbCut (~4 Elo)
     // If we have a good enough capture and a reduced search returns a value
     // much above beta, we can (almost) safely prune the previous move.
@@ -1268,7 +1273,9 @@ moves_loop: // When in check, search starts from here
       }
       else if (   givesCheck
                && depth > 6
-               && abs(ss->staticEval) > Value(100))
+               && (abs(ss->staticEval) > Value(100)
+                   || (janggiSearch && depth <= 11 && moveCount <= 4
+                       && pos.see_ge(move, Value(-90)))))
           extension = 1;
 
       // Losing chess capture extension
@@ -1686,7 +1693,13 @@ moves_loop: // When in check, search starts from here
           &&  type_of(move) != PROMOTION)
       {
 
-          if (moveCount > 2)
+          // V6 EG_Q4: extend the qsearch non-check capture list modestly
+          // only in genuine sparse Janggi endgames. Leave normal searches
+          // and other variants at the proven two-move limit.
+          const bool smallJanggiEndgame = pos.material_counting() == JANGGI_MATERIAL
+                    && pos.count<ALL_PIECES>() <= 14 && depth >= -3;
+          const bool captureSequence = smallJanggiEndgame && pos.captured_piece() != NO_PIECE;
+          if (moveCount > (captureSequence ? 6 : (smallJanggiEndgame ? 4 : 2)))
               continue;
 
           futilityValue = futilityBase + PieceValue[EG][pos.piece_on(to_sq(move))];

@@ -2584,6 +2584,62 @@ bool Position::see_ge(Move m, Value threshold) const {
   if (var->petrifyOnCaptureTypes & type_of(moved_piece(m)) && capture(m))
       return false;
 
+  // Janggi: all attacker types must be evaluated in *value order*,
+  // including soldier, guard, elephant, horse and cannon. Re-evaluate the
+  // rays after each hypothetical exchange because cannon screens and the
+  // blocking legs of horses/elephants make ordinary chess X-rays invalid.
+  if (material_counting() == JANGGI_MATERIAL && type_of(m) == NORMAL && (threshold < VALUE_ZERO))
+  {
+      Bitboard exchangeOcc = (pieces() ^ from) ^ to;
+      Color exchangeSide = color_of(moved_piece(m));
+      Piece occupant = moved_piece(m); // The moving piece initially on 'to'.
+      int exchangeResult = 1;
+      int exchangeSwap = swap;
+
+      while (true)
+      {
+          exchangeSide = ~exchangeSide;
+          Bitboard candidates = attackers_to(to, exchangeOcc, exchangeSide)
+                                & pieces(exchangeSide) & exchangeOcc;
+          // Janggi cannons cannot capture another cannon.
+          if (type_of(occupant) == JANGGI_CANNON)
+              candidates &= ~pieces(exchangeSide, JANGGI_CANNON);
+          if (pinners(~exchangeSide) & exchangeOcc)
+              candidates &= ~blockers_for_king(exchangeSide);
+          if (!candidates)
+              break;
+
+          Square cheapest = SQ_NONE;
+          Value cheapestValue = VALUE_INFINITE;
+          Bitboard nonKing = candidates & ~pieces(KING);
+          Bitboard selectable = nonKing ? nonKing : candidates;
+          while (selectable)
+          {
+              Square attackerSquare = pop_lsb(selectable);
+              const Value attackerValue = PieceValue[MG][piece_on(attackerSquare)];
+              if (attackerValue < cheapestValue)
+                  cheapestValue = attackerValue, cheapest = attackerSquare;
+          }
+          if (cheapest == SQ_NONE)
+              break;
+
+          exchangeResult ^= 1;
+          // A king capture is only valid if the square cannot be recaptured.
+          if (type_of(piece_on(cheapest)) == KING)
+          {
+              Bitboard afterKing = exchangeOcc ^ SquareBB[cheapest];
+              return (attackers_to(to, afterKing, ~exchangeSide)
+                        & pieces(~exchangeSide) & afterKing) ? exchangeResult ^ 1 : exchangeResult;
+          }
+          if ((exchangeSwap = cheapestValue - exchangeSwap) < exchangeResult)
+              break;
+
+          occupant = piece_on(cheapest);
+          exchangeOcc ^= SquareBB[cheapest];
+      }
+      return bool(exchangeResult);
+  }
+
   Bitboard occupied = (type_of(m) != DROP ? pieces() ^ from : pieces()) ^ to;
   Color stm = color_of(moved_piece(m));
   Bitboard attackers = attackers_to(to, occupied);

@@ -388,6 +388,83 @@ void UCI::loop(int argc, char* argv[]) {
       else if (token == "flip")     pos.flip();
       else if (token == "bench")    bench(pos, is, states);
       else if (token == "d")        sync_cout << pos << sync_endl;
+      else if (token == "audit_terminal") {
+          Value ending = VALUE_ZERO, optional = VALUE_ZERO, immediate = VALUE_ZERO;
+          bool end_now = pos.is_game_end(ending, 0);
+          bool opt = pos.is_optional_game_end(optional, 0);
+          bool imm = pos.is_immediate_game_end(immediate, 0);
+          auto legal_count = MoveList<LEGAL>(pos).size();
+          sync_cout << "info string AUDIT_TERMINAL end=" << end_now
+                    << " value=" << int(ending)
+                    << " optional=" << opt << " optional_value=" << int(optional)
+                    << " immediate=" << imm << " immediate_value=" << int(immediate)
+                    << " legal=" << legal_count
+                    << " incheck=" << bool(pos.checkers())
+                    << " nolegal_value=" << int(pos.checkers() ? pos.checkmate_value(0) : pos.stalemate_value(0))
+                    << " turn=" << int(pos.side_to_move())
+                    << " rule50=" << pos.rule50_count()
+                    << " material_result=" << int(pos.material_counting_result())
+                    << sync_endl;
+      }
+      else if (token == "seeaudit") {
+          // Diagnostic-only: never called during actual engine search.
+          // Exact local-exchange minimax below enumerates LEGAL captures onto
+          // a fixed target and allows either side to stop. It is intentionally
+          // not a full tactic or a search replacement.
+          int cap=8, emit=12;
+          is >> cap >> emit;
+          cap=std::max(1,std::min(cap,12));
+          emit=std::max(0,std::min(emit,100));
+          unsigned total=0, capmoves=0, badmon=0, disagree=0, printed=0;
+          auto capture_gain = [&](Position& p, Square target, int depth, auto&& self) -> int {
+              if (depth == 0) return 0;
+              int best=0;
+              for (const auto& r : MoveList<LEGAL>(p)) {
+                  if (to_sq(r) != target || !p.capture(r) || type_of(r) != NORMAL)
+                      continue;
+                  int victim = int(PieceValue[MG][p.piece_on(target)]);
+                  StateInfo state;
+                  p.do_move(r, state);
+                  int v = victim - self(p, target, depth-1, self);
+                  p.undo_move(r);
+                  if (v>best) best=v;
+              }
+              return best;
+          };
+          for (const auto& m : MoveList<LEGAL>(pos)) {
+              if (type_of(m) != NORMAL) continue;
+              total++;
+              bool x=pos.see_ge(m, Value(-1));
+              bool y=pos.see_ge(m, Value(0));
+              bool z=pos.see_ge(m, Value(1));
+              bool mono=(!x&&y)||(!y&&z);
+              if (mono) badmon++;
+              bool capture=pos.capture(m);
+              if (capture) capmoves++;
+              bool miss=false;int local=0;
+              {
+                  int victim=int(PieceValue[MG][pos.piece_on(to_sq(m))]);
+                  StateInfo state;
+                  pos.do_move(m,state);
+                  local=victim-capture_gain(pos,to_sq(m),cap-1,capture_gain);
+                  pos.undo_move(m);
+                  miss=(bool(local>=-1)!=x) || (bool(local>=0)!=y) || (bool(local>=1)!=z);
+                  if (miss) disagree++;
+              }
+              if ((mono || miss) && printed<unsigned(emit)) {
+                  sync_cout << "info string SEE_AUDIT_DETAIL move=" << UCI::move(pos,m)
+                            << " capture=" << capture << " sm1=" << x << " s0=" << y
+                            << " sp1=" << z << " mono=" << mono
+                            << " local=" << local << " mismatch=" << miss
+                            << " fen=" << pos.fen() << sync_endl;
+                  printed++;
+              }
+          }
+          sync_cout << "info string SEE_AUDIT_SUM total=" << total
+                    << " captures=" << capmoves << " mono=" << badmon
+                    << " local_mismatch=" << disagree << " depth=" << cap
+                    << " fen=" << pos.fen() << sync_endl;
+      }
       else if (token == "eval")     trace_eval(pos);
       else if (token == "compiler") sync_cout << compiler_info() << sync_endl;
       else if (token == "export_net")
